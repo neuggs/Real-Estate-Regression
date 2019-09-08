@@ -1,0 +1,362 @@
+---
+title: "Real Estate Regression"
+author: "Frank Neugebauer"
+date: "January 27, 2019"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(Hmisc)
+library(ggm)
+library(dplyr)
+library(corrplot)
+library(pastecs)
+library(readxl)
+library(scales)
+library(formattable)
+library(data.table)
+library(QuantPsyc)
+library(car)
+```
+# Introduction
+Uses statistical correlation, multiple regression and R programming Sale Price and several other possible predictors are analyzed and used.
+
+# Import Data and Extract Sale Price and Sq Ft Lot
+```{r echo = TRUE}
+housing_data <- read_excel("week-7-housing.xlsx")
+housing_subset <- housing_data[c('Sale Price', 'sq_ft_lot', 'square_feet_total_living', 'bedrooms',
+                                 'bath_full_count', 'year_built')]
+count_all <- count(housing_subset)
+# rename column
+setnames(housing_subset, old = c('Sale Price', 'sq_ft_lot', 'square_feet_total_living', 'bedrooms',
+                                 'bath_full_count', 'year_built'), new = c('sale_price', 'sq_ft_lot', 
+                                                                          'square_feet_total_living',
+                                                                          'bedrooms','bath_full_count', 
+                                                                          'year_built'))
+```
+# How the data is cleansed.
+Shifted from the raw data to log(size) and log(price). This created
+a more normalized distribution. The core transformation and resulting plot follow.
+Omitted the analysis that shows that neither price nor size follow a normal distribution,
+except for the `qplot` of each.
+
+```{r echo = TRUE}
+qplot(sample = housing_subset$sale_price, stat='qq')
+qplot(sample = housing_subset$sq_ft_lot, stat='qq')
+
+# Convert to log for price then size.
+housing_subset$log_price <- log(housing_subset$sale_price)
+ggplot(housing_subset, aes(x = log_price)) +
+  geom_histogram() +
+  labs(title = 'Histogram for Log Price')
+qplot(sample = housing_subset$log_price, stat='qq')
+
+housing_subset$log_size <- log(housing_subset$sq_ft_lot)
+ggplot(housing_subset, aes(x = log_size)) +
+  geom_histogram() +
+  labs(title = 'Histogram for Log Size')
+qplot(sample = housing_subset$log_size, stat='qq')
+```
+
+First, setup the linear regression between price and size, and then setup all
+the ratios.
+
+```{r echo = TRUE}
+price_size_lm <- lm(log_price ~ log_size, data = housing_subset)
+housing_subset$resid <- resid(price_size_lm)
+housing_subset$stand_resid <- rstandard(price_size_lm)
+housing_subset$stud_resid <- rstudent(price_size_lm)
+housing_subset$cooks_dist <- cooks.distance(price_size_lm)
+housing_subset$leverage <- hatvalues(price_size_lm)
+housing_subset$covariance_ratios <- covratio(price_size_lm)
+```
+
+Look for large residuals > |2|. Store these because we won't be removing 
+anything that's not in this set. 
+
+```{r echo = TRUE}
+housing_subset$large_residual <- housing_subset$stand_resid > 2 | housing_subset$stand_resid < -2
+large_resid_sum <- sum(housing_subset$large_residual)
+housing_subset_large_resid <- housing_subset[housing_subset$large_residual, c('sale_price', 'log_price',
+   'sq_ft_lot', 'log_price', 'resid', 'stand_resid', 'cooks_dist', 'leverage', 'covariance_ratios')]
+```
+
+There are `r large_resid_sum` observations with a standard residual > |2|, which represents
+`r large_resid_sum / count_all` of the entire population as expected. 
+
+Next, very large (> |2.5|) deviations from the standard residual are considered. 99% of the
+cases should fall within |2.5| with 1% falling outside those limits. 
+
+```{r echo = TRUE}
+housing_subset$far_outside_resid <- housing_subset$stand_resid > 2.5 | housing_subset$stand_resid < -2.5
+sum_far_outside <- sum(housing_subset$far_outside_resid)
+```
+
+In this case, `r sum_far_outside` fall far outside, which is `r sum_far_outside / count_all`, which
+is not expected, since it's more than double the expected `1%`. More investigation is required.
+
+The next metric to be considered is Cook's Distance. This measures influence when the value
+is above 1. 
+
+```{r echo = TRUE}
+housing_subset_large_resid$large_cooks <- housing_subset_large_resid$cooks_dist >= 1
+large_cooks_sum <- sum(housing_subset_large_resid$large_cooks)
+```
+
+There are `r large_cooks_sum` observations that meet the criteria for influence, but as will
+be shown shortly, there are two cases that come fairly close.
+
+Next, leverage is considered, which take 2x and 3x of the average leverage. The calculation for
+"average" leverage (which is not the `mean` for all leverage values) is .02 (k + 1)/n = (1 + 1)/12865
+or 2/12865 or simply `0.000155460552'.
+```{r echo = TRUE}
+avg_leverage <- 0.000155460552
+two_x <- avg_leverage * 2
+three_x <- avg_leverage * 3
+two_x_leverage_sum <- sum(housing_subset_large_resid$leverage >= two_x & 
+                            housing_subset_large_resid$leverage < three_x)
+three_x_leverage_sum <- sum(housing_subset_large_resid$leverage >= three_x)
+
+# I need this later on.
+housing_subset$two_x_leverage <- housing_subset$leverage >= two_x & 
+                            housing_subset$leverage < three_x
+```
+
+The average leverage for the sample is `r avg_leverage`. There are `r two_x_leverage_sum` cases at two
+times this, and `r three_x_leverage_sum` cases at three times.
+
+Covariance boundaries are defined as 1 +/- [3(k + 1)/n] = 1 +/- [3(1 + 1)/12865 =
+1 +/- 6/12865 = 1 +/- 0.000466381656 or `1.000466381656` and `.999533618344`.
+
+```{r echo = TRUE}
+bound_low <- .999533618344
+bound_high <- 1.000466381656
+covariance_deviation_sum <- sum(housing_subset_large_resid$covariance_ratios 
+   <= bound_high & housing_subset_large_resid$covariance_ratios >= bound_low)
+```
+
+There are `r covariance_deviation_sum` outlier cases.
+
+Some cases clearly require removal. The |2| standard residual outliers are accounted
+for as the superset of possible observations for removal. Cook's did not further
+reduce this number, but leverage did significantly. Covariance reduced the number
+from the standard residual list, but only by the same number as the sum of both
+2x and 3x leverage.
+
+**As a very conservative data remover, I chose the 2x leverage observations and removed them.**
+
+```{r echo = TRUE}
+final_data <- housing_subset[(housing_subset$two_x_leverage == FALSE) | 
+                               (housing_subset$large_residual == FALSE), 
+                             c('sale_price', 'sq_ft_lot', 
+                               'square_feet_total_living',
+                               'bedrooms','bath_full_count', 
+                               'year_built')]
+final_data_count <- count(final_data)
+```
+
+# Created two variables: one that contains the variables Sale Price and Square Foot of Lot and one that contains Sale Price and several additional predictors. The basis for the additional predictor selections is explained.
+
+```{r echo = TRUE}
+lm_price_size <- lm(sale_price ~ sq_ft_lot, data = final_data)
+lm_price_size_br_living <- lm(sale_price ~ sq_ft_lot + bedrooms + square_feet_total_living, data = final_data)
+```
+
+Chose `bedrooms` and `square_feet_total_living` as additional predictors becasue in
+looking at the `pairs()` graphic, it visually seemed to have the clearest correlation.
+
+```{r echo = TRUE}
+pairs(final_data)
+```
+
+# Executed a summary() function on two variables defined in the previous step to compare the model results. Included the R2 and Adjusted R2 statistics? I then explain what these results say about the overall model. 
+
+```{r echo = TRUE}
+summary(lm_price_size_br_living)
+```
+
+The original $R^2$ and Adjusted $R^2$ are `0.01434` and `0.01426` respectively. With the
+addition of the two extra predictors, those values are `0.207` and `0.2068`. This is a significant
+change, which may indicate that price is more affected by factors outside of lot size.
+This is not a surprise, given that generally, the correlation between price and lot size
+was pretty small. In other words, it statistically supports the prior model.
+
+However, this change may also simply be because I added more predictors. To understand this,
+I used the `AIC` function and as noted in Chapter 7, a higher AIC (between two `lm` models)
+means means the fit is worse, and a lower AIC means the fit is better.
+
+```{r echo= TRUE}
+AIC_delta <- AIC(lm_price_size_br_living, k = 2) - AIC(lm_price_size, k = 2)
+```
+
+The difference between the original model and the new model is `r AIC_delta`, which 
+indicates a better fit, and possibly that the additional factors are a better predictor
+of price.
+
+# d. Considering the parameters of the multiple regression model you have created. What are the standardized betas for each parameter and what do the values indicate?
+
+I used the `QuantPsyc` library's `lm.beta` to get standardized betas for each parameter.
+
+```{r echo = TRUE}
+lm.beta(lm_price_size_br_living)
+```
+
+These values mean that every 1 change in standard deviation, the lot size has a minimal
+impact on price, the number of bedrooms appears to reduce the price,
+and square footage (internal) has a significant impact. The bedrooms anomoly may be
+because it's taken in the context of the external lot size. 
+
+# e. Calculate the confidence intervals for the parameters in your model and explain what the results indicate.
+I could not figure out what is required here. Doing a CI with a multiple regression 
+model is not in the scope of what we've seen so far and it's unclear why I'd do 
+any other kind of CI.
+
+# f. Assess the improvement of the new model compared to your original model (simple regression model) by testing whether this change is significant by performing an analysis of variance.
+
+This is a job for `anova`, or One-way Analysis of Variance. 
+```{r echo = TRUE}
+anova <- anova(lm_price_size, lm_price_size_br_living)
+```
+
+The output is a little challenging to interpret. While Pr(>F) is very small in the
+second model, there's no comparable value to compare with the first. 
+
+# g. Perform casewise diagnostics to identify outliers and/or influential cases, storing each functions output in a dataframe assigned to a unique variable name.
+
+I'll get right into the `r` code, which really gets to the heart of g-k. Instead
+if creating new data frames, which is wasteful, I'm going to use the final_data
+data frame and add new columns to it.
+
+```{r echo = TRUE}
+final_data$resid <- resid(lm_price_size_br_living)
+final_data$stand_resid <- rstandard(lm_price_size_br_living)
+final_data$stud_resid <- rstudent(lm_price_size_br_living)
+final_data$cooks_dist <- cooks.distance(lm_price_size_br_living)
+final_data$leverage <- hatvalues(lm_price_size_br_living)
+final_data$covariance_ratios <- covratio(lm_price_size_br_living)
+```
+
+Now that the data is all calcuated, it can be used. First, show some of the data.
+```{r echo = TRUE}
+final_data[c('resid', 'stand_resid', 'stud_resid', 'cooks_dist', 'leverage', 'covariance_ratios')]
+```
+
+# h. Calculate the standardized residuals using the appropriate command, specifying those that are +-2, storing the results of large residuals in a variable you create.
+```{r echo = TRUE}
+final_data$large_residual <- final_data$stand_resid > 2 | final_data$stand_resid < -2
+```
+
+# i. Use the appropriate function to show the sum of large residuals.
+The `sum()` function on the `large_residuals` variable yields:
+```{r echo = TRUE}
+sum_large_resids <- sum(final_data$large_residual)
+```
+
+# j. Which specific variables have large residuals (only cases that evaluate as TRUE)?
+This is a big list with `r sum_large_resids` rows, but here's part of it:
+
+```{r echo = TRUE}
+final_data[final_data$large_residual, c('sale_price', 'sq_ft_lot', 'resid')]
+```
+
+# k. Investigate further by calculating the leverage, cooks distance, and covariance rations. Comment on all cases that are problematics.
+
+```{r echo = TRUE}
+cooks <- final_data[final_data$cooks_dist, c('sale_price', 'sq_ft_lot', 'resid')]
+```
+
+There is only 1 observation with a Cook's Distance >= 1:
+
+```{r echo = TRUE}
+cooks
+```
+
+Leverage is first calculated and then 2x and 3x. Finally, the number of observations
+that are within 2x and 3x.
+```{r echo = TRUE}
+avg_leverage <- 3 / count(final_data)
+final_data$two_x_leverage <- final_data$leverage >= 0.0004671078 & 
+  final_data$leverage < 0.0007006617
+final_data$three_x_leverage <- final_data$leverage >= 0.0007006617
+
+two_x_lev <- sum(final_data$two_x_leverage)
+three_x_lev <- sum(final_data$three_x_leverage)
+```
+We expect to see `5%` of the observations outside of 2x. The data is `r two_x_lev / final_data_count`, which
+is good. Only `1%` of observations should lie outside of 3x (1%). The data is `r three_x_lev / final_data_count`. This is much higher than expected, indicated the potential for outliers.
+
+Covariance boundaries are defined as 1 +/- [3(k + 1)/n] = 1 +/- [3(3 + 1)/12845 =
+1 +/- 12/12845 = 1 +/- 0.000934215648 or `1.000934215648` and `.999065784352`.
+
+```{r echo = TRUE}
+
+bound_low <- 1 - 12/12845
+bound_high <- 1 + 12/12845
+covariance_deviation_sum <- sum(final_data$covariance_ratios <= bound_high & 
+                                  final_data$covariance_ratios >= bound_low)
+```
+
+There are `r covariance_deviation_sum` outlier cases. This is pretty extraordinary,
+and hopefully, given there's only 1 outlier using Cook's this is OK.
+
+# l. Perform the necessary calculations to assess the assumption of independence and state if the condition is met or not.
+
+I (arbitrarily) chose the `durbinWatsonTest()` version of the Durbin Watson Test to check for
+independence.
+```{r echo = TRUE}
+dwt <- durbinWatsonTest(lm_price_size_br_living)
+dwt
+```
+
+The value of for the D-W Statistic is only `0.526`, which is not very close to 2, implying
+that the test for independence has not been met. Similarly, the p-value is not bigger
+than 0.05.
+
+# m. Perform the necessary calculations to assess the assumption of no multicollinearity and state if the condition is met or not.
+
+Do math.
+
+```{r echo = TRUE}
+vif <- vif(lm_price_size_br_living)
+vif_tol <- 1 / vif
+mean_vif <- mean(vif)
+
+vif
+vif_tol
+mean_vif
+```
+
+The multicollinearity guidelines:
+1. There are no VIF values greater than 10, so no cause for concern there.
+2. The mean is greater than 1, but not substantially, so it is unlikely the regression is biased.
+3. No tolerances are below 0.1 or 0.2, which is good - no serious problems.
+
+This all implies there is no colliniarity within the model.
+
+# n. Visually check the assumptions related to the residuals using the plot() and hist() functions. Summarize what each graph is informing you of and if any anomalies are present.
+
+Here we go...histogram, ggplot, and scatter.
+```{r echo = TRUE}
+final_data$fitted <- lm_price_size_br_living$fitted.values
+histogram <- ggplot(final_data, aes(stud_resid)) + 
+  geom_histogram(aes(y = ..density..), color = 'black', fill = 'white') +
+  labs(x = 'Studentized Residual', y = 'Density')
+histogram + stat_function(fun = dnorm, args = list(mean = mean(final_data$stud_resid, na.rm = TRUE),
+                                                   sd = sd(final_data$stud_resid, na.rm = TRUE)),
+                          color = 'red', size = 1)
+
+qplot(sample = final_data$stud_resid, stat = 'qq') + labs(x = 'Theoretical Values', y = 'Observed Values')
+
+scatter <- ggplot(final_data, aes(fitted, stud_resid))
+scatter + geom_point() + geom_smooth(method = 'lm', color = 'black') + labs(x = 'Fitted Values', 
+   y = 'Studentized Residual')
+```
+
+# o. Overall, is this regression model unbiased?  If an unbiased regression model, what does this tell us about the sample vs. the entire population model?
+
+I believe the model is unbiased - but I'm not entirely sure becasue there are mixed 
+results from the tests performed. If the model is unbiased, this implies that the sample
+is a valid representation of the population and statistically accurate for regression
+modeling.

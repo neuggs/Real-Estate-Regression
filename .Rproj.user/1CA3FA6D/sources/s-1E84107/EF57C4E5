@@ -1,0 +1,25 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1569625568029.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "53531075",
+    "id" : "EF57C4E5",
+    "lastKnownWriteTime" : 1569627138,
+    "last_content_update" : 1569627138877,
+    "path" : "~/GitHub/Real-Estate-Regression/Real Estate Regression.rmd",
+    "project_path" : "Real Estate Regression.rmd",
+    "properties" : {
+        "cursorPosition" : "158,0",
+        "scrollLine" : "143"
+    },
+    "read_only" : false,
+    "read_only_alternatives" : [
+    ],
+    "relative_order" : 1,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_markdown"
+}

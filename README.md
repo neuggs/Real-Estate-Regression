@@ -18,3 +18,6 @@ The project was create in RStudio, although you can use the `.Rmd` file with any
 * `library(car)`
 
 You can install any of those (if you don't have them) with `install.packages(PACKAGE_NAME)`.
+
+# To Use
+Within your R IDE (or from the command line), run the `Real Estate Regression.rmd` file. In RStudio, you use knit to generate the Word document (for example).
